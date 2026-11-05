@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -39,6 +40,18 @@ type testConnection struct {
 	fetches  atomic.Int64
 	failRead bool
 	last     *blockingBody
+	sequence atomic.Uint64
+}
+
+// This backend uses its own IDs, with no content hashing or disk staging.
+func (c *testConnection) PrepareUpload(reader io.Reader, opt UploadOption) (io.ReadCloser, UploadOption, error) {
+	if opt.Key == "" {
+		if opt.KeyMode != "" {
+			return nil, opt, unsupportedOption("upload", "key_mode")
+		}
+		opt.Key = fmt.Sprintf("remote-%d", c.sequence.Add(1))
+	}
+	return io.NopCloser(reader), opt, nil
 }
 
 func (c *testConnection) Open() error {

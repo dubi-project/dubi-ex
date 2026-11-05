@@ -1,6 +1,9 @@
 package storage
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	ErrNotOpen           = errors.New("storage: not open")
@@ -11,8 +14,10 @@ var (
 	ErrInvalidRange      = errors.New("storage: invalid range")
 	ErrInvalidOption     = errors.New("storage: invalid option")
 	ErrInvalidHandler    = errors.New("storage: no matching processor")
-	ErrBrowseUnsupported = errors.New("storage: URL browsing unsupported")
-	ErrLocalUnsupported  = errors.New("storage: local path unsupported")
-	ErrStatUnsupported   = errors.New("storage: metadata lookup unsupported")
+	ErrUnsupported       = errors.New("storage: unsupported capability or option")
+	ErrBrowseUnsupported = fmt.Errorf("storage: URL browsing: %w", ErrUnsupported)
+	ErrLocalUnsupported  = fmt.Errorf("storage: local path: %w", ErrUnsupported)
+	ErrStatUnsupported   = fmt.Errorf("storage: metadata lookup: %w", ErrUnsupported)
+	ErrSizeMismatch      = errors.New("storage: upload size does not match declared size")
 	ErrImageTooLarge     = errors.New("storage: image dimensions exceed limit")
 )

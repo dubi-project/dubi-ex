@@ -23,7 +23,7 @@ func resetRuntime(t *testing.T) {
 	t.Cleanup(dubi.Reset)
 	root := t.TempDir()
 	config := filepath.Join(root, "config.json")
-	text := fmt.Sprintf(`{"storage":{"settings":{"root":%q},"options":{"download":%q,"thumbnail":%q,"preview":%q,"temp":%q}}}`, filepath.Join(root, "objects"), filepath.Join(root, "download"), filepath.Join(root, "thumbnail"), filepath.Join(root, "preview"), filepath.Join(root, "temp"))
+	text := fmt.Sprintf(`{"storage":{"settings":{"root":%q,"temp":%q},"options":{"download":%q,"thumbnail":%q,"preview":%q}}}`, filepath.Join(root, "objects"), filepath.Join(root, "temp"), filepath.Join(root, "download"), filepath.Join(root, "thumbnail"), filepath.Join(root, "preview"))
 	if err := os.WriteFile(config, []byte(text), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestFileRoundTripPrefixAndSelfUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(file.Prefix(), "tenant/") || file.Size() != 6 || file.Version() == "" {
+	if !strings.HasPrefix(file.Prefix(), "tenant/") || file.Size() != 6 || file.Hash() == "" || file.Version() == "" {
 		t.Fatalf("file: %+v", file)
 	}
 	decoded, err := Decode(file.Code())
@@ -88,7 +88,8 @@ func TestFileRoundTripPrefixAndSelfUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Code() != file.Code() || read(t, again.Code()) != "abcdef" {
+	// Backend version changes do not change the compact reference.
+	if again.Code() != file.Code() || again.Hash() != file.Hash() || read(t, again.Code()) != "abcdef" {
 		t.Fatal("self-upload damaged object")
 	}
 	manual, err := UploadReader(strings.NewReader("manual"), UploadOption{Key: "named", Prefix: "business", Name: "name.txt"})
@@ -208,12 +209,12 @@ func TestOverwriteAndRemoveInvalidateDownloadCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := UploadReader(strings.NewReader("second"), opt)
+	two, err := UploadReader(strings.NewReader("other"), opt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one.Code() == two.Code() {
-		t.Fatal("version missing from reference")
+	if one.Code() != two.Code() || one.Hash() == two.Hash() {
+		t.Fatal("same-size overwrite must keep Code while changing the content hash")
 	}
 	if _, err := os.Stat(cached); !os.IsNotExist(err) {
 		t.Fatalf("old cache survived: %v", err)
@@ -223,7 +224,7 @@ func TestOverwriteAndRemoveInvalidateDownloadCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(current)
-	if string(data) != "second" {
+	if string(data) != "other" {
 		t.Fatalf("old reference returned stale data: %q", data)
 	}
 	if err := Remove(two.Code()); err != nil {

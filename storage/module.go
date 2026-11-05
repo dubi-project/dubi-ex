@@ -22,6 +22,7 @@ type Module struct {
 	instances                        map[string]*Instance
 	ring                             *support.HashRing
 	options                          Options
+	cacheMu                          sync.Mutex
 	cache                            map[string]*os.Root
 	ctx                              context.Context
 	cancel                           context.CancelFunc
@@ -100,6 +101,13 @@ func (m *Module) Open(*dubi.Context) (err error) {
 			m.instances = map[string]*Instance{}
 		}
 	}()
+	// Anchor cache paths at startup; local upload paths belong to the driver.
+	for _, dir := range []*string{&m.options.Download, &m.options.Thumbnail, &m.options.Preview} {
+		*dir, err = filepath.Abs(*dir)
+		if err != nil {
+			return err
+		}
+	}
 	for _, name := range support.Keys(m.sources) {
 		cfg := m.sources[name]
 		inst := &Instance{Name: name, Config: cfg, Settings: support.CloneMap(cfg.Settings)}
@@ -118,27 +126,6 @@ func (m *Module) Open(*dubi.Context) (err error) {
 		if e = conn.Open(); e != nil {
 			return fmt.Errorf("storage source %q: open: %w", name, e)
 		}
-	}
-	for kind, dir := range map[string]string{"download": m.options.Download, "thumbnail": m.options.Thumbnail, "preview": m.options.Preview} {
-		dir, err = filepath.Abs(dir)
-		if err != nil {
-			return err
-		}
-		if err = os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-		root, e := os.OpenRoot(dir)
-		if e != nil {
-			return e
-		}
-		m.cache[kind] = root
-	}
-	m.options.Temp, err = filepath.Abs(m.options.Temp)
-	if err != nil {
-		return err
-	}
-	if err = os.MkdirAll(m.options.Temp, 0755); err != nil {
-		return err
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.opened, m.closed = true, false
@@ -176,11 +163,13 @@ func (m *Module) Close(*dubi.Context) error {
 	for i := len(names) - 1; i >= 0; i-- {
 		errs = append(errs, m.instances[names[i]].conn.Close())
 	}
+	m.cacheMu.Lock()
 	for _, root := range m.cache {
 		errs = append(errs, root.Close())
 	}
 	m.instances = map[string]*Instance{}
 	m.cache = nil
+	m.cacheMu.Unlock()
 	m.closing = false
 	return errors.Join(errs...)
 }

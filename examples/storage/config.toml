@@ -1,0 +1,27 @@
+# Run from the repository root:
+# DUBI_CONFIG=examples/storage/config.toml go run ./examples/storage
+
+[storage.options]
+download = "store/download"
+thumbnail = "store/thumbnail"
+preview = "store/preview"
+cache_ttl = "10m"
+
+[storage.connections.default]
+type = "file"
+prefix = "example"
+
+[storage.connections.default.settings]
+root = "store/files"
+temp = "store/temp/default"
+key_mode = "hash"
+base_url = "https://files.example.test"
+
+[storage.connections.archive]
+type = "file"
+weight = -1
+
+[storage.connections.archive.settings]
+root = "store/archive"
+temp = "store/temp/archive"
+key_mode = "random"

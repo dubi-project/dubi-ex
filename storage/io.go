@@ -45,18 +45,25 @@ func atomicRootWrite(ctx context.Context, root *os.Root, target string, reader i
 	})
 	return n, err
 }
-func atomicRootGenerate(ctx context.Context, root *os.Root, target string, generate func(io.Writer) error) (err error) {
+func atomicRootGenerate(ctx context.Context, root *os.Root, target string, generate func(io.Writer) error) error {
+	_, err := atomicRootGenerateInfo(ctx, root, target, generate)
+	return err
+}
+
+// Capture metadata on the completed temporary file, before publishing it. A
+// separate Stat after Rename could accidentally observe another writer's object.
+func atomicRootGenerateInfo(ctx context.Context, root *os.Root, target string, generate func(io.Writer) error) (info os.FileInfo, err error) {
 	if err = ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	dir := filepath.Dir(target)
 	if err = root.MkdirAll(dir, 0755); err != nil {
-		return err
+		return nil, err
 	}
 	temp := filepath.Join(dir, randomName())
 	file, err := root.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		_ = file.Close()
@@ -65,24 +72,30 @@ func atomicRootGenerate(ctx context.Context, root *os.Root, target string, gener
 		}
 	}()
 	if err = generate(file); err != nil {
-		return err
+		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if err = file.Chmod(0644); err != nil {
-		return err
+		return nil, err
 	}
 	if err = file.Sync(); err != nil {
-		return err
+		return nil, err
+	}
+	if info, err = file.Stat(); err != nil {
+		return nil, err
 	}
 	if err = file.Close(); err != nil {
-		return err
+		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	return root.Rename(temp, target)
+	if err = root.Rename(temp, target); err != nil {
+		return nil, err
+	}
+	return info, nil
 }
 func atomicPathWrite(ctx context.Context, target string, reader io.Reader) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {

@@ -38,6 +38,7 @@ func run() (err error) {
 		}
 	}()
 	fmt.Printf("uploaded: %s (%d bytes)\n", file.Name(), file.Size())
+	fmt.Printf("content hash: %s\nbackend version: %s\n", file.Hash(), file.Version())
 	body, err := storage.Fetch(file.Code(), storage.FetchOption{Range: &storage.Range{Start: 0, End: 0}})
 	if err != nil {
 		return err

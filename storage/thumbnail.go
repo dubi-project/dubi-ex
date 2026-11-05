@@ -28,7 +28,10 @@ func (m *Module) generateImage(ctx context.Context, inst *Instance, file *File, 
 	}
 	typee, format := thumbnailFormat(file.Type())
 	target := filepath.Join(objectID(file), version, fmt.Sprintf("%d-%d-%d.%s", width, height, position, typee))
-	root := m.cache[kind]
+	root, err := m.cacheRoot(kind)
+	if err != nil {
+		return "", err
+	}
 	variantUnlock := m.objects.lock(kind+":"+target, true)
 	defer variantUnlock()
 	if reuse && m.fresh(root, target) {

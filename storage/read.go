@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/dubi-project/dubi-ex/internal/support"
 )
 
 func Fetch(code string, opts ...FetchOption) (Stream, error) {
@@ -105,7 +107,10 @@ func (m *Module) downloadLocked(ctx context.Context, inst *Instance, file *File)
 	if err != nil {
 		return "", err
 	}
-	root := m.cache["download"]
+	root, err := m.cacheRoot("download")
+	if err != nil {
+		return "", err
+	}
 	target := filepath.Join(objectID(file), version, "object"+typeSuffix(file.typee))
 	unlock := m.objects.lock("download:"+target, true)
 	defer unlock()
@@ -137,6 +142,10 @@ func typeSuffix(typee string) string {
 	return "." + typee
 }
 func (m *Module) invalidate(file *File) error {
+	// Only opened caches need eager invalidation. Other caches verify the
+	// backend version on first use (or never reuse data without a version).
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
 	var errs []error
 	for _, root := range m.cache {
 		errs = append(errs, root.RemoveAll(objectID(file)))
@@ -208,6 +217,10 @@ func Browse(code string, opts ...BrowseOption) (string, error) {
 		return "", ErrBrowseUnsupported
 	}
 	opt.Context = ctx
+	opt.Headers, opt.Params = support.CloneMap(opt.Headers), support.CloneMap(opt.Params)
+	if err := validateBrowseOptions(inst.conn, opt); err != nil {
+		return "", err
+	}
 	return browser.Browse(file, opt)
 }
 func Stat(code string, opts ...StatOption) (ObjectInfo, error) {

@@ -11,17 +11,25 @@ import (
 )
 
 type File struct {
-	base, prefix, key, typee, version string
-	size                              int64
-	proxy, remote                     bool
-	ctx                               context.Context
+	base, prefix, key, typee, hash, version string
+	size                                    int64
+	proxy, remote                           bool
+	ctx                                     context.Context
 }
 
-func (f *File) Base() string    { return f.base }
-func (f *File) Prefix() string  { return f.prefix }
-func (f *File) Key() string     { return f.key }
-func (f *File) Type() string    { return f.typee }
-func (f *File) Size() int64     { return f.size }
+func (f *File) Base() string   { return f.base }
+func (f *File) Prefix() string { return f.prefix }
+func (f *File) Key() string    { return f.key }
+func (f *File) Type() string   { return f.typee }
+func (f *File) Size() int64    { return f.size }
+
+// Hash is the optional content digest supplied by the driver (SHA-1 for local
+// files). Compact Codes omit it; legacy JSON references retain their digest.
+func (f *File) Hash() string { return f.hash }
+
+// Version is the backend's opaque upload-time version, if the driver supplies
+// one. Compact Codes do not include it. Use Stat for the current version;
+// Code does not pin historical content.
 func (f *File) Version() string { return f.version }
 func (f *File) Proxy() bool     { return f.proxy }
 func (f *File) Remote() bool    { return f.remote }
@@ -40,12 +48,17 @@ type fileReference struct {
 	Key     string `json:"key"`
 	Type    string `json:"type,omitempty"`
 	Size    int64  `json:"size"`
+	Hash    string `json:"hash,omitempty"`
 	Version string `json:"version,omitempty"`
 }
 
 func (f *File) Code() string {
-	data, _ := json.Marshal(fileReference{f.base, f.prefix, f.key, f.typee, f.size, f.version})
-	return "v1." + base64.RawURLEncoding.EncodeToString(data)
+	base := f.base
+	if base == "default" {
+		base = ""
+	}
+	raw := strings.Join([]string{base, f.prefix, f.key, f.typee, strconv.FormatInt(f.size, 10)}, "\t")
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 func (f *File) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
@@ -55,19 +68,30 @@ func (f *File) MarshalJSON() ([]byte, error) {
 		Type string `json:"type,omitempty"`
 	}{f.Code(), f.Name(), f.size, f.typee})
 }
-func (i *Instance) NewFile(prefix, key, typee string, size int64) *File {
-	return &File{base: i.Name, prefix: prefix, key: key, typee: typee, size: size, proxy: i.Config.Proxy, remote: i.Config.Remote}
+
+// NewFile constructs an upload result. Drivers may supply the opaque version
+// returned by the write itself, along with an optional content digest.
+func (i *Instance) NewFile(prefix, key, typee string, size int64, metadata ...ObjectInfo) *File {
+	file := &File{base: i.Name, prefix: prefix, key: key, typee: typee, size: size, proxy: i.Config.Proxy, remote: i.Config.Remote}
+	if len(metadata) > 0 {
+		file.hash, file.version = metadata[0].Hash, metadata[0].Version
+	}
+	return file
 }
 
 func Decode(code string) (*File, error) {
 	var ref fileReference
-	if strings.HasPrefix(code, "v1.") {
-		data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(code, "v1."))
+	if strings.HasPrefix(code, "v1.") || strings.HasPrefix(code, "v2.") {
+		data, err := base64.RawURLEncoding.DecodeString(code[3:])
 		if err != nil || json.Unmarshal(data, &ref) != nil {
 			return nil, ErrInvalidCode
 		}
+		if strings.HasPrefix(code, "v1.") {
+			// v1 called the content digest "version". It is not a backend version.
+			ref.Hash, ref.Version = ref.Version, ""
+		}
 	} else {
-		// Read infrago's existing five-field references as well.
+		// The compact five-field format is shared with infrago.
 		data, err := base64.RawURLEncoding.DecodeString(code)
 		if err != nil {
 			return nil, ErrInvalidCode
@@ -88,7 +112,7 @@ func Decode(code string) (*File, error) {
 	if !validSource(ref.Base) || !validRelative(ref.Prefix, true) || !validRelative(ref.Key, false) || !validType(ref.Type) || ref.Size < 0 {
 		return nil, ErrInvalidCode
 	}
-	return &File{base: ref.Base, prefix: ref.Prefix, key: ref.Key, typee: ref.Type, size: ref.Size, version: ref.Version}, nil
+	return &File{base: ref.Base, prefix: ref.Prefix, key: ref.Key, typee: ref.Type, size: ref.Size, hash: ref.Hash, version: ref.Version}, nil
 }
 func validSource(name string) bool {
 	return name != "" && name == strings.TrimSpace(name) && validRelative(name, false) && !strings.Contains(name, "/")

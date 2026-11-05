@@ -25,63 +25,65 @@ type Options struct {
 	Download           string
 	Thumbnail          string
 	Preview            string
-	Temp               string
 	CacheTTL           time.Duration
 	MaxImagePixels     int64
 	MaxThumbnailPixels int64
 }
 
 func defaultOptions() Options {
-	return Options{Download: "store/download", Thumbnail: "store/thumbnail", Preview: "store/preview", Temp: "store/temp", CacheTTL: 10 * time.Minute, MaxImagePixels: 40_000_000, MaxThumbnailPixels: 16_000_000}
+	return Options{Download: "store/download", Thumbnail: "store/thumbnail", Preview: "store/preview", CacheTTL: 10 * time.Minute, MaxImagePixels: 40_000_000, MaxThumbnailPixels: 16_000_000}
 }
 
 func (m *Module) Config(global Map) error {
 	options := defaultOptions()
-	// Accept infrago's [file] paths, then canonical module options.
-	if value, ok := global["file"]; ok {
-		fields, ok := support.AsMap(value)
-		if !ok {
-			return fmt.Errorf("storage: file options must be an object")
-		}
-		var err error
-		options, err = parseOptions(fields, options)
-		if err != nil {
-			return err
-		}
-	}
-	copyGlobal := support.CloneMap(global)
+	files := map[string]Map{}
 	if value, exists := global["storage"]; exists {
 		section, ok := support.AsMap(value)
 		if !ok {
 			return fmt.Errorf("storage: config must be an object")
 		}
-		section = support.CloneMap(section)
-		for _, key := range []string{"option", "options"} {
-			if value, ok := section[key]; ok {
-				fields, ok := support.AsMap(value)
+		root := Map{}
+		for _, key := range support.Keys(section) {
+			switch key {
+			case "options":
+				fields, ok := support.AsMap(section[key])
 				if !ok {
-					return fmt.Errorf("storage: %s must be an object", key)
+					return fmt.Errorf("storage: options must be an object")
 				}
 				var err error
 				options, err = parseOptions(fields, options)
 				if err != nil {
 					return err
 				}
-				delete(section, key)
+			case "connections":
+				connections, ok := support.AsMap(section[key])
+				if !ok {
+					return fmt.Errorf("storage: connections must be an object")
+				}
+				for _, name := range support.Keys(connections) {
+					fields, ok := support.AsMap(connections[name])
+					if !ok {
+						return fmt.Errorf("storage connection %q: config must be an object", name)
+					}
+					files[name] = support.CloneMap(fields)
+				}
+			default:
+				root[key] = section[key]
 			}
 		}
-		copyGlobal["storage"] = section
-	}
-	files, err := support.Sources(copyGlobal, "storage", "proxy", "remote")
-	if err != nil {
-		return err
+		if len(root) > 0 {
+			if _, exists := files["default"]; exists {
+				return fmt.Errorf("storage: duplicate default connection")
+			}
+			files["default"] = support.CloneMap(root)
+		}
 	}
 	for _, name := range support.Keys(files) {
 		if !validSource(name) {
-			return fmt.Errorf("storage: invalid source %q", name)
+			return fmt.Errorf("storage: invalid connection name %q", name)
 		}
 		if _, err := parseConfig(files[name], Config{}); err != nil {
-			return fmt.Errorf("storage source %q: %w", name, err)
+			return fmt.Errorf("storage connection %q: %w", name, err)
 		}
 	}
 	m.mu.Lock()
@@ -124,15 +126,23 @@ func parseConfig(fields Map, cfg Config) (Config, error) {
 			} else {
 				cfg.Remote = flag
 			}
-		case "setting", "settings":
+		case "settings":
 		default:
 			return cfg, fmt.Errorf("unknown config field %q", key)
 		}
 	}
-	var err error
-	cfg.Settings, err = support.MergeSettings(cfg.Settings, fields)
-	if err != nil {
-		return cfg, err
+	cfg.Settings = support.CloneMap(cfg.Settings)
+	if value, exists := fields["settings"]; exists {
+		settings, ok := support.AsMap(value)
+		if !ok {
+			return cfg, fmt.Errorf("settings must be an object")
+		}
+		if cfg.Settings == nil {
+			cfg.Settings = Map{}
+		}
+		for key, value := range settings {
+			cfg.Settings[key] = support.CloneValue(value)
+		}
 	}
 	cfg.Type = strings.ToLower(strings.TrimSpace(cfg.Type))
 	if cfg.Type == "" {
@@ -154,7 +164,9 @@ func parseOptions(fields Map, opt Options) (Options, error) {
 	for _, key := range support.Keys(fields) {
 		value := fields[key]
 		switch key {
-		case "download", "thumbnail", "thumb", "preview", "temp":
+		case "key_mode", "temp":
+			return opt, fmt.Errorf("storage: %s belongs in the local connection's settings, not options", key)
+		case "download", "thumbnail", "preview":
 			text, ok := value.(string)
 			if !ok || strings.TrimSpace(text) == "" {
 				return opt, fmt.Errorf("storage: invalid %s directory", key)
@@ -162,12 +174,10 @@ func parseOptions(fields Map, opt Options) (Options, error) {
 			switch key {
 			case "download":
 				opt.Download = text
-			case "thumbnail", "thumb":
+			case "thumbnail":
 				opt.Thumbnail = text
 			case "preview":
 				opt.Preview = text
-			case "temp":
-				opt.Temp = text
 			}
 		case "cache_ttl":
 			duration, err := support.Duration(value)

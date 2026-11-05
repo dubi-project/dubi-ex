@@ -23,11 +23,43 @@ func TestConfigFormatsSourcesAndProfile(t *testing.T) {
 			var content string
 			switch format {
 			case "json":
-				content = fmt.Sprintf(`{"storage":{"options":{"download":%q,"thumbnail":%q,"preview":%q,"temp":%q},"sources":{"auto":{"prefix":"tenant","settings":{"root":%q}},"manual":{"weight":-1,"settings":{"root":%q}}}}}`, dir+"/download", dir+"/thumbnail", dir+"/preview", dir+"/temp", dir+"/auto", dir+"/manual")
+				content = fmt.Sprintf(`{"storage":{"options":{"download":%q,"thumbnail":%q,"preview":%q},"connections":{"auto":{"prefix":"tenant","settings":{"root":%q,"temp":%q}},"manual":{"weight":-1,"settings":{"root":%q,"temp":%q,"key_mode":"random"}}}}}`, dir+"/download", dir+"/thumbnail", dir+"/preview", dir+"/auto", dir+"/temp-auto", dir+"/manual", dir+"/temp-manual")
 			case "toml":
-				content = fmt.Sprintf("[storage.options]\ndownload='%s/download'\nthumbnail='%s/thumbnail'\npreview='%s/preview'\ntemp='%s/temp'\n[storage.sources.auto]\nprefix='tenant'\n[storage.sources.auto.settings]\nroot='%s/auto'\n[storage.sources.manual]\nweight=-1\n[storage.sources.manual.settings]\nroot='%s/manual'\n", dir, dir, dir, dir, dir, dir)
+				content = fmt.Sprintf(`[storage.options]
+download='%[1]s/download'
+thumbnail='%[1]s/thumbnail'
+preview='%[1]s/preview'
+[storage.connections.auto]
+prefix='tenant'
+[storage.connections.auto.settings]
+root='%[1]s/auto'
+temp='%[1]s/temp-auto'
+[storage.connections.manual]
+weight=-1
+[storage.connections.manual.settings]
+root='%[1]s/manual'
+temp='%[1]s/temp-manual'
+key_mode='random'
+`, dir)
 			case "yaml":
-				content = fmt.Sprintf("storage:\n  options:\n    download: '%s/download'\n    thumbnail: '%s/thumbnail'\n    preview: '%s/preview'\n    temp: '%s/temp'\n  sources:\n    auto:\n      prefix: tenant\n      settings:\n        root: '%s/auto'\n    manual:\n      weight: -1\n      settings:\n        root: '%s/manual'\n", dir, dir, dir, dir, dir, dir)
+				content = fmt.Sprintf(`storage:
+  options:
+    download: '%[1]s/download'
+    thumbnail: '%[1]s/thumbnail'
+    preview: '%[1]s/preview'
+  connections:
+    auto:
+      prefix: tenant
+      settings:
+        root: '%[1]s/auto'
+        temp: '%[1]s/temp-auto'
+    manual:
+      weight: -1
+      settings:
+        root: '%[1]s/manual'
+        temp: '%[1]s/temp-manual'
+        key_mode: random
+`, dir)
 			}
 			if err := os.WriteFile(config, []byte(content), 0600); err != nil {
 				t.Fatal(err)
@@ -39,6 +71,25 @@ func TestConfigFormatsSourcesAndProfile(t *testing.T) {
 			startRuntime(t, "selected")
 			if len(module.instances) != 2 {
 				t.Fatalf("profile/sources: %v", module.instances)
+			}
+			auto := module.instances["auto"].conn.(*fileConnection)
+			manualConn := module.instances["manual"].conn.(*fileConnection)
+			if auto.keyMode != HashKey || manualConn.keyMode != RandomKey || auto.temp == manualConn.temp {
+				t.Fatalf("connection settings not isolated: %+v %+v", auto, manualConn)
+			}
+			hashed, err := UploadReaderTo("auto", strings.NewReader("abc"))
+			if err != nil || len(hashed.Key()) != 27 {
+				t.Fatalf("hash connection: %+v %v", hashed, err)
+			}
+			random, err := UploadReaderTo("manual", strings.NewReader("abc"))
+			if err != nil || len(random.Key()) != 32 {
+				t.Fatalf("random connection: %+v %v", random, err)
+			}
+			if _, err := os.Stat(auto.temp); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(manualConn.temp); !os.IsNotExist(err) {
+				t.Fatalf("random connection unexpectedly used staging: %v", err)
 			}
 			first, err := UploadReader(strings.NewReader("one"), UploadOption{Key: "same", Prefix: "business", Name: "file.txt"})
 			if err != nil {
@@ -65,21 +116,21 @@ func TestConfigFormatsSourcesAndProfile(t *testing.T) {
 		})
 	}
 }
-func TestConfigAliasesAndValidation(t *testing.T) {
+func TestConfigDefaultsAndValidation(t *testing.T) {
 	m := newModule()
-	if err := m.Config(Map{"file": Map{"download": "old"}, "storage": Map{"option": Map{"download": "single"}, "options": Map{"download": "plural"}, "type": "file", "setting": Map{"value": "old", "legacy": true}, "settings": Map{"value": "new"}}}); err != nil {
+	if err := m.Config(Map{"storage": Map{"options": Map{"download": "custom"}, "type": "file", "settings": Map{"root": "configured"}}}); err != nil {
 		t.Fatal(err)
 	}
 	m.RegisterDriver("file", &fileDriver{})
-	m.RegisterConfig("default", Config{Prefix: "code", Settings: Map{"code": true}})
+	m.RegisterConfig("default", Config{Prefix: "code", Settings: Map{"root": "code", "key_mode": "random"}})
 	if err := m.Setup(nil); err != nil {
 		t.Fatal(err)
 	}
 	cfg := m.sources["default"]
-	if m.options.Download != "plural" || cfg.Prefix != "code" || cfg.Settings["value"] != "new" || cfg.Settings["legacy"] != true || cfg.Settings["code"] != true {
+	if m.options.Download != "custom" || cfg.Prefix != "code" || cfg.Settings["root"] != "configured" || cfg.Settings["key_mode"] != "random" {
 		t.Fatalf("merge: %+v %+v", m.options, cfg)
 	}
-	for _, fields := range []Map{{"type": "missing"}, {"prefix": "../x"}, {"settings": "bad"}, {"options": true}, {"options": Map{"max_image_pixels": -1}}, {"weight": -2}, {"sources": Map{"default": Map{}}, "type": "file"}} {
+	for _, fields := range []Map{{"type": "missing"}, {"prefix": "../x"}, {"settings": "bad"}, {"options": true}, {"options": Map{"max_image_pixels": -1}}, {"options": Map{"key_mode": "unknown"}}, {"options": Map{"key_mode": 1}}, {"weight": -2}, {"sources": Map{"default": Map{}}, "type": "file"}} {
 		m := newModule()
 		m.RegisterDriver("file", &fileDriver{})
 		err := m.Config(Map{"storage": fields})
