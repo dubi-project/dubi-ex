@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"os"
 	"path"
 	"strings"
@@ -12,10 +13,18 @@ import (
 	. "github.com/dubi-project/dubi-go/base"
 )
 
+// Upload accepts a file path, Map{"file": path}, or a multipart FileHeader.
+// Readers opened by Upload are closed before it returns.
 func Upload(from any, opts ...UploadOption) (*File, error) { return UploadTo("", from, opts...) }
 func UploadTo(source string, from any, opts ...UploadOption) (*File, error) {
+	opt := UploadOption{}
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	var name string
 	switch value := from.(type) {
+	case *multipart.FileHeader:
+		return uploadMultipartTo(source, value, opt)
 	case string:
 		name = value
 	case Map:
@@ -39,10 +48,6 @@ func UploadTo(source string, from any, opts ...UploadOption) (*File, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, ErrInvalidPath
-	}
-	opt := UploadOption{}
-	if len(opts) > 0 {
-		opt = opts[0]
 	}
 	if opt.Name == "" {
 		opt.Name = name

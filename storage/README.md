@@ -20,7 +20,7 @@ defer body.Close()
 
 ## 上传与定位
 
-- `Upload(pathOrMap, options...)` / `UploadTo(source, pathOrMap, options...)`：路径或 `Map{"file": path}`。
+- `Upload(from, options...)` / `UploadTo(source, from, options...)`：路径、`Map{"file": path}` 或 `*multipart.FileHeader`。
 - `UploadReader(reader, options...)` / `UploadReaderTo(source, reader, options...)`：读取调用方提供的流。
 - `UploadOption` 包含 Context、Key、KeyMode、Size、Prefix、Name、Type、Mimetype、Metadata、Tags、Expires。
 - Type 为明确指定的扩展名，其次由 Mimetype 推断，再使用 Name/源路径的扩展名。
@@ -33,6 +33,45 @@ defer body.Close()
 - Size=nil 表示长度未知，指向 0 表示空文件。路径上传自动提供长度；流上传可按需指定，实际字节数不符时返回 ErrSizeMismatch，不提交半成品。
 - 最终路径始终组合连接 Config.Prefix、上传 Prefix、对象名；显式 Key 也保留连接前缀。
 - 读者由调用方拥有，UploadReader 不关闭调用方的 Reader；Reader 应能配合传入 Context 取消。
+- 传入 FileHeader 时自动 Open/Close，并以原文件名、Content-Type、Size 补齐选项。显式选项优先；未指定 Type/Mimetype 时先保留文件名扩展名，没有扩展名再按 MIME 推断。
+- FileHeader 无论由标准库保存在内存还是磁盘都可直接使用。storage 不删除请求的 multipart 临时文件，应在请求结束清理前完成上传；上传成功的存储对象不依赖这些临时文件。
+
+web 上传文件可以直接交给 storage，不需要业务代码手动 Open、Close 或复制临时文件：
+
+```go
+header, ok := ctx.Upload("file")
+if !ok {
+    ctx.Failed()
+    return
+}
+file, err := storage.Upload(header, storage.UploadOption{
+    Context: ctx.HTTP.Request.Context(), // 可选：跟随请求取消
+})
+if err != nil {
+    ctx.Error()
+    return
+}
+ctx.JSON(file) // 包含可持久化的 code
+```
+
+不需要额外选项时直接 `storage.Upload(header)`；指定连接用 `storage.UploadTo("archive", header)`。
+文件名和 MIME 仅作为命名提示，不代表已验证文件内容类型。
+
+多文件使用复数方法，支持 `[]*multipart.FileHeader` 和 `[]multipart.FileHeader`：
+
+```go
+files, err := storage.Uploads(ctx.Uploads("files"))
+// 或指定连接与公共前缀：
+files, err = storage.UploadsTo("archive", ctx.Uploads("files"), storage.UploadOption{
+    Prefix: "photos",
+    Context: ctx.HTTP.Request.Context(),
+})
+```
+
+批量按输入顺序逐个上传，返回 `[]*storage.File`。空列表返回空结果；遇到第一个错误就停止，
+错误包含从 0 开始的文件索引，并保留已完成存储的结果（不会自动回滚）。若单文件已提交但
+缓存清理失败，该 File 也会随错误返回。选项应用于每个文件，默认元数据分别从各自的文件头补齐。
+多文件不允许共用显式 Key，避免相互覆盖；需要逐文件指定 key 时自行循环调用 Upload。
 
 ```go
 file, err := storage.UploadReader(reader, storage.UploadOption{
